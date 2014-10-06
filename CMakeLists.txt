@@ -7,6 +7,7 @@ include(cmake/rpath.cmake)
 
 file(GLOB_RECURSE SRCS src/*.c src/*.h)
 add_library(libengine STATIC ${SRCS})
+INCLUDE_DIRECTORIES(src)
 
 set(ENGINE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/src)
 function(target_add_engine tgt)

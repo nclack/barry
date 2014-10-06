@@ -1,4 +1,4 @@
-#include "mat.h"
+#include "matrix.h"
 #include <string.h>
 
 static float* i33(float * restrict inverse,const float * const restrict t) {
