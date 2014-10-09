@@ -46,7 +46,9 @@ static float thresh(float *v,const unsigned n,const float thresh) {
     dst will hold four lambdas: Must be sized float[4] 
         lambda4 is computed based on the others: lambda4 = 1-lambda1-lambda2-lambda3
 */
-static void map(struct tetrahedron *self,float * dst,const float * const src) {
+static void map(const struct tetrahedron * const restrict self,
+                float * restrict dst,
+                const float * const restrict src) {
     float tmp[3];
     memcpy(tmp,src,sizeof(float)*3);
     {
@@ -103,7 +105,14 @@ static void idx2coord(float * restrict r,unsigned idx,const unsigned * const res
 
 /* THE CRUX */
 
-
+/* 4 indexes each for 5 tetrads; the first is the center tetrad */
+static const unsigned indexes[5][4]={
+        {1,2,4,7},
+        {2,4,6,7}, // opposite 1
+        {1,4,5,7}, // opposite 2
+        {1,2,3,7}, // opposite 4
+        {0,1,2,4}  // opposite 7
+};
 
 /**
     @param cubeverts [in]   An array of floats ordered like float[8][3].
@@ -115,37 +124,38 @@ static void idx2coord(float * restrict r,unsigned idx,const unsigned * const res
                             Bit 1 is the y dimension, and bit 2 the z dimension.
 */
 
-static void resample(TPixel * const restrict dst,const unsigned * const restrict dst_shape,const unsigned * const restrict dst_strides,
-                     TPixel * const restrict src,const unsigned * const restrict src_shape,const unsigned * const restrict src_strides,
-                     const float * restrict cubeverts) {
-    /* Approach
+#define NTHREADS (8)
 
-    1. Build tetrahedra from cube vertices
-    2. Over pixel indexes for dst, for central tetrad
-        1. map to lambdas
-        2. check for oob/best tetrad.
-        3. For best tetrad
-           1. map to uvw
-           2. sample source
-    */
+struct work {
+    TPixel *  restrict dst;
+    const unsigned * restrict dst_shape;
+    const unsigned * restrict dst_strides;
 
+    TPixel *  restrict src;
+    const unsigned * restrict src_shape;
+    const unsigned * restrict src_strides;
 
-    /* 4 indexes each for 5 tetrads; the first is the center tetrad */
-    const unsigned indexes[5][4]={
-            {1,2,4,7},
-            {2,4,6,7}, // opposite 1
-            {1,4,5,7}, // opposite 2
-            {1,2,3,7}, // opposite 4
-            {0,1,2,4}  // opposite 7
-    };
-    struct tetrahedron tetrads[5];
-    unsigned i;
-    for(i=0;i<5;i++)
-        tetrahedron(tetrads+i,cubeverts,indexes[i]); // TODO: VERIFY the indexing on "indexes" works correctly here
+    const float * restrict cubeverts;
+
+    struct tetrahedron * tetrads;
+    int id;
+};
+
+static void worker(void *param) {
+    const struct work * const work=(struct work *)(param);
 
     {
+        TPixel * const restrict dst                         =work->dst;;
+        const unsigned * const restrict dst_shape           =work->dst_shape;
+        const unsigned * const restrict dst_strides         =work->dst_strides;
+        TPixel * const restrict src                         =work->src;
+        const unsigned * const restrict src_shape           =work->src_shape;
+        const unsigned * const restrict src_strides         =work->src_strides;
+        const float * restrict cubeverts                    =work->cubeverts;
+        const struct tetrahedron * const restrict tetrads   =work->tetrads;
+
         unsigned idst;
-        for(idst=0;idst<prod(dst_shape,3);++idst) {
+        for(idst=work->id;idst<prod(dst_shape,3);idst+=NTHREADS) {
             float r[3],lambdas[4];
             unsigned itetrad;
             idx2coord(r,idst,dst_shape);
@@ -164,7 +174,7 @@ static void resample(TPixel * const restrict dst,const unsigned * const restrict
                 unsigned idim,ilambda,isrc=0;
                 for(idim=0;idim<3;++idim) {
                     float s=0.0f;
-                    const float d=src_shape[idim];
+                    const float d=(float)(src_shape[idim]);
                     for(ilambda=0;ilambda<4;++ilambda) {
                         const float      w=lambdas[ilambda];
                         const unsigned idx=indexes[itetrad][ilambda];
@@ -179,6 +189,39 @@ static void resample(TPixel * const restrict dst,const unsigned * const restrict
 
         }
     }
+}
+
+#include <thread.h>
+
+static void resample(TPixel * const restrict dst,const unsigned * const restrict dst_shape,const unsigned * const restrict dst_strides,
+                     TPixel * const restrict src,const unsigned * const restrict src_shape,const unsigned * const restrict src_strides,
+                     const float * restrict cubeverts) {
+    /* Approach
+
+    1. Build tetrahedra from cube vertices
+    2. Over pixel indexes for dst, for central tetrad
+        1. map to lambdas
+        2. check for oob/best tetrad.
+        3. For best tetrad
+           1. map to uvw
+           2. sample source
+    */
+
+    struct tetrahedron tetrads[5];
+    thread_t ts[8]={0};
+    struct work jobs[8]={0};
+    unsigned i;
+    for(i=0;i<5;i++)
+        tetrahedron(tetrads+i,cubeverts,indexes[i]); // TODO: VERIFY the indexing on "indexes" works correctly here
+
+    for(i=0;i<NTHREADS;++i)
+    {
+        const struct work job={dst,dst_shape,dst_strides,src,src_shape,src_strides,cubeverts,tetrads,i};
+        jobs[i]=job;
+        ts[i]=thread_create(worker,jobs+i);
+    }
+    for(i=0;i<NTHREADS;++i) thread_join(ts+i,-1);
+    for(i=0;i<NTHREADS;++i) thread_release(ts+i);
 
 }
 

@@ -16,9 +16,9 @@ static unsigned eq(const TPixel * const a, const TPixel * const b,unsigned n) {
     return 1;
 }
 
-#define NX (256)
-#define NY (256)
-#define NZ (256)
+#define NX (512)
+#define NY (512)
+#define NZ (512)
 
 
 const unsigned src_shape []={NX,NY,NZ};
@@ -26,28 +26,44 @@ const unsigned src_stride[]={1,NX,NX*NY};
 const unsigned dst_shape []={NX,NY,NZ};
 const unsigned dst_stride[]={1,NX,NX*NY};
 
-#define s (0.25f)
-#define cos (0.866f)
-#define sin (0.5f)
 
-#define px(x,y) (cos*(x-0.5f)-sin*(y-0.5f)+0.5)
-#define py(x,y) (sin*(x-0.5f)+cos*(y-0.5f)+0.5)
+#define s (0.5f)
+
+#if 1 
+    // 30 degrees
+    #define sn (0.5f)
+    #define cs (0.866f)
+#elif 0
+    // 5 degrees
+    #define sn (0.0872f)
+    #define cs (0.9962)
+#elif 1 
+    // 0 degrees
+    #define sn (0.0f)
+    #define cs (1.0f)
+#endif
+
+#define tx(x,y) (( cs*((x)-0.5f)-sn*((y)-0.5f) )*s+0.5f)
+#define ty(x,y) (( sn*((x)-0.5f)+cs*((y)-0.5f) )*s+0.5f)
 
 const float cube[]={
-    NX*s*px(0,0),NY*s*py(0,0),0,
-    NX*s*px(1,0),NY*s*py(1,0),0,
-    NX*s*px(0,1),NY*s*py(0,1),0,
-    NX*s*px(1,1),NY*s*py(1,1),0,
+    NX*tx(0,0),NY*ty(0,0),0.0*NZ,
+    NX*tx(1,0),NY*ty(1,0),0.0*NZ,
+    NX*tx(0,1),NY*ty(0,1),0.0*NZ,
+    NX*tx(1,1),NY*ty(1,1),0.0*NZ,
      0, 0,NZ,
     NX, 0,NZ,
      0,NY,NZ,
     NX,NY,NZ,
 };
+
 #undef s
-#undef sin
-#undef cos
-#undef px
-#undef py
+
+#undef cs
+#undef sn
+
+#undef tx
+#undef ty
 
 int main(int argc,char* argv[]) {
 
@@ -80,12 +96,12 @@ int main(int argc,char* argv[]) {
     {   
         const size_t shape_sz[]={NX,NY,NZ};
         nd_t v=ndref(ndreshape(ndcast(ndinit(),nd_u8),3,shape_sz),src,nd_static);
-        ndioClose(ndioWrite(ndioOpen("src.mp4",NULL,"w"),v));
+        ndioClose(ndioWrite(ndioOpen("src.tif",NULL,"w"),v));
     }
     {
         const size_t shape_sz[]={NX,NY,NZ};
         nd_t v=ndref(ndreshape(ndcast(ndinit(),nd_u8),3,shape_sz),dst,nd_static);
-        ndioClose(ndioWrite(ndioOpen("dst.mp4",NULL,"w"),v));
+        ndioClose(ndioWrite(ndioOpen("dst.tif",NULL,"w"),v));
     }
 #endif
 
