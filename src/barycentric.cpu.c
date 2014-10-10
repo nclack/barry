@@ -135,8 +135,6 @@ struct work {
     const unsigned * restrict src_shape;
     const unsigned * restrict src_strides;
 
-    const float * restrict cubeverts;
-
     struct tetrahedron * tetrads;
     int id;
 };
@@ -151,7 +149,6 @@ static void worker(void *param) {
         TPixel * const restrict src                         =work->src;
         const unsigned * const restrict src_shape           =work->src_shape;
         const unsigned * const restrict src_strides         =work->src_strides;
-        const float * restrict cubeverts                    =work->cubeverts;
         const struct tetrahedron * const restrict tetrads   =work->tetrads;
 
         unsigned idst;
@@ -216,7 +213,7 @@ static void resample(TPixel * const restrict dst,const unsigned * const restrict
 
     for(i=0;i<NTHREADS;++i)
     {
-        const struct work job={dst,dst_shape,dst_strides,src,src_shape,src_strides,cubeverts,tetrads,i};
+        const struct work job={dst,dst_shape,dst_strides,src,src_shape,src_strides,tetrads,i};
         jobs[i]=job;
         ts[i]=thread_create(worker,jobs+i);
     }
