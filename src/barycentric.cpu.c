@@ -224,7 +224,7 @@ static void resample(TPixel * const restrict dst,const unsigned * const restrict
 
 static int runTests(void);
 
-const struct resampler_api Barycentric = {
+const struct resampler_api BarycentricCPU = {
     resample,
     runTests
 };

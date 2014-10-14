@@ -45,7 +45,7 @@ int main(int argc,char* argv[]) {
                 
     }
 
-    BarycentricCPU.resample(dst,dst_shape,dst_stride,
+    BarycentricGPU.resample(dst,dst_shape,dst_stride,
                             src,src_shape,src_stride,
                             cube);
 

@@ -5,12 +5,17 @@ include(cmake/show.cmake)
 include(cmake/ide.cmake)
 include(cmake/rpath.cmake)
 
-file(GLOB_RECURSE SRCS src/*.c src/*.h)
-add_library(libengine STATIC ${SRCS})
-INCLUDE_DIRECTORIES(src)
-
 find_package(ND)
+find_package(CUDA 4.0)
 
+file(GLOB_RECURSE SRCS src/*.c src/*.h)
+include_directories(src)
+
+file(GLOB_RECURSE CUSRCS src/*.cu)
+cuda_compile(CUFILES ${CUSRCS} STATIC)
+list(APPEND SRCS ${CUFILES})
+
+add_library(libengine STATIC ${SRCS})
 
 set(ENGINE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/src)
 function(target_add_engine tgt)

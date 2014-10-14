@@ -2,7 +2,11 @@ set(tgt mltk)
 
 file(GLOB TEST_COMMON_SRCS common/*.h common/*.c)
 
-foreach(testset math barycentricCPU)
+foreach(testset 
+        math 
+        barycentricCPU
+        barycentricGPU
+    )
     file(GLOB TESTS ${testset}/*.c)
     foreach(t ${TESTS})
       get_filename_component(exe ${t} NAME_WE)

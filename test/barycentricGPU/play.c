@@ -84,7 +84,7 @@ int main(int argc,char* argv[]) {
 
     {
         TicTocTimer t=tic();
-        BarycentricCPU.resample(dst,dst_shape,dst_stride,
+        BarycentricGPU.resample(dst,dst_shape,dst_stride,
                              src,src_shape,src_stride,
                              cube);
         printf("TIME %fs\n",toc(&t));
