@@ -56,50 +56,34 @@ extern "C" const struct resampler_api BarycentricGPU = {
 
 /* simpleTransformWithTexture */
 
-/* FIXME: TextureObject api is not supported on pre compute 3.0 devices 
-          Need to convert to texture reference api
-*/
+texture<float,cudaTextureType2D,cudaReadModeElementType> src;
 
-__global__ void simpleTransformWithTexture_k(float *dst,cudaTextureObject_t src,int w,int h,float th) {
+__global__ void simpleTransformWithTexture_k(float *dst,int w,int h,float th) {
     unsigned int x = blockIdx.x*blockDim.x+threadIdx.x;
     unsigned int y = blockIdx.y*blockDim.y+threadIdx.y;
     float u = (x/(float)w)-0.5f,
           v = (y/(float)h)-0.5f,
          tu = u*cosf(th)-v*sinf(th)+0.5f,
          tv = u*sinf(th)+v*cosf(th)+0.5f;
-    dst[y*w+x]=tex2D<float>(src,tu,tv);
+    dst[y*w+x]=tex2D(src,tu,tv);
 }
 
 static int simpleTransformWithTexture(void) {
     const int w=256,h=256;
     try {
-        float *dst;
         cudaArray *a;
-        cudaTextureObject_t texture=0;
+
+        src.addressMode[0]=cudaAddressModeWrap;
+        src.addressMode[1]=cudaAddressModeWrap;
+        src.filterMode=cudaFilterModeLinear;
+        src.normalized=1;
         { 
             cudaChannelFormatDesc d=cudaCreateChannelDesc(32,0,0,0,cudaChannelFormatKindFloat);
             CUTRY(cudaMallocArray(&a,&d,w,h));
+            cudaBindTextureToArray(src,a,d);
+
         }
         // --> should copy source data in at this point (cudaMemcpyToArray) <-- 
-        {
-            struct cudaResourceDesc resource;
-            {
-                memset(&resource,0,sizeof(resource));
-                resource.resType=cudaResourceTypeArray;
-                resource.res.array.array=a;
-            }
-
-            struct cudaTextureDesc sampler;
-            {
-                memset(&sampler,0,sizeof(sampler));
-                sampler.addressMode[0]  =cudaAddressModeWrap;
-                sampler.addressMode[1]  =cudaAddressModeWrap;
-                sampler.filterMode      =cudaFilterModeLinear;
-                sampler.readMode        =cudaReadModeElementType; //??
-                sampler.normalizedCoords=1;
-            }
-            CUTRY(cudaCreateTextureObject(&texture,&resource,&sampler,0));
-        }
 
         float *out;
         CUTRY(cudaMalloc(&out,w*h*sizeof(float)));
@@ -107,14 +91,13 @@ static int simpleTransformWithTexture(void) {
         dim3 block(16,16),
              grid((w+block.x-1)/block.x,
                   (h+block.y-1)/block.y);
-        simpleTransformWithTexture_k<<<grid,block>>>(out,texture,w,h,15*3.14159f/180.0f);
+        simpleTransformWithTexture_k<<<grid,block>>>(out,w,h,15*3.14159f/180.0f);
 
         // clean up
         cudaFree(out);
-        cudaDestroyTextureObject(texture);
         cudaFreeArray(a);
 
-    } catch(int) {
+    } catch(...) {
         return 1;
     }
     return 0;
