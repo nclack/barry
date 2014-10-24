@@ -2,8 +2,10 @@
 #include <stdio.h>
 #include <stdlib.h>  
 #include <nd.h>
+#include <tictoc.h>
 
-#define ASSERT(e) do{if(!(e)) {printf("%s(%d): %s()(\n\tExpression evaluated as false.\n\t%s\n",__FILE__,__LINE__,__FUNCTION__,#e); exit(1); }}while(0)
+#define ASSERT(e) do{if(!(e)) {printf("%s(%d): %s()(\n\tExpression evaluated as false.\n\t%s\n",__FILE__,__LINE__,__FUNCTION__,#e); exit(2); }}while(0)
+#define TIME(e) do{TicTocTimer t=tic(); {e;} printf("TIME %10fs\t%s\n",toc(&t),#e);} while(0)
 #define countof(e) (sizeof(e)/sizeof(*(e)))
 
 static unsigned eq(const TPixel * const a, const TPixel * const b,unsigned n) {
@@ -37,17 +39,21 @@ const float cube[]={
 int main(int argc,char* argv[]) {
 
     {
-
         unsigned x,y,z,i=0;
         for(z=0;z<64;++z) for(y=0;y<64;++y) for(x=0;x<64;++x,++i) {
-            src[i]=(x/3)^(y/3)^(z/3);            
+            src[i]=(x/3)^(y/3)^(z/3);
         }
-                
     }
 
-    BarycentricGPU.resample(dst,dst_shape,dst_stride,
-                            src,src_shape,src_stride,
-                            cube);
+
+    {
+        struct resampler r;
+        TIME(ASSERT( BarycentricGPU.init  (&r,dst_shape,3)));
+        TIME(ASSERT( BarycentricGPU.source(&r,src,src_shape,3)));
+        TIME(ASSERT( BarycentricGPU.resample(&r,cube)));
+        TIME(ASSERT( BarycentricGPU.result(&r,dst)));
+                     BarycentricGPU.release(&r);
+    }
 
 #if 1
     ndioAddPluginPath("plugins");

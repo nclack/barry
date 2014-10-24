@@ -3,6 +3,36 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include<stdio.h>
+static void default_reporter(const char* msg, const char* expr, const char* file, int line, const char* function,void* usr) {
+    (void)usr;
+    printf("%s(%d) - %s()\n\t%s\n\t%s\n",file,line,function,msg,expr);
+}
+
+typedef void (*reporter_t)(const char* msg, const char* expr, const char* file, int line, const char* function,void* usr);
+
+static void*      reporter_context_=0;
+static reporter_t error_  =&default_reporter;
+static reporter_t warning_=&default_reporter;
+static reporter_t info_   =&default_reporter;
+
+#define ERR(e,msg)  error_(msg,#e,__FILE__,__LINE__,__FUNCTION__,reporter_context_)
+#define WARN(e,msg) warning_(msg,#e,__FILE__,__LINE__,__FUNCTION__,reporter_context_)
+#define INFO(e,msg) info_(msg,#e,__FILE__,__LINE__,__FUNCTION__,reporter_context_)
+
+#define ASSERT(e) do{if(!(e)) {ERR(e,"Expression evaluated as false."); return 1; }}while(0)
+
+static void useReporters(
+    void (*error)  (const char* msg, const char* expr, const char* file, int line, const char* function,void* usr),
+    void (*warning)(const char* msg, const char* expr, const char* file, int line, const char* function,void* usr),
+    void (*info)   (const char* msg, const char* expr, const char* file, int line, const char* function,void* usr),
+    void *usr) {
+    error_  =error;
+    warning_=warning;
+    info_   =info;
+    reporter_context_=usr;
+}
+
 struct tetrahedron {
     float T[9];
     float ori[3];
@@ -68,6 +98,12 @@ static unsigned prod(const unsigned * const v,unsigned n) {
     return p;
 }
 
+static void cumprod(unsigned * const out, const unsigned * const v, unsigned n) {
+    unsigned i;
+    out[0]=v[0];
+    for(i=1;i<n;++i) out[i]=out[i-1]*v[i];
+}
+
 static unsigned any_greater_than_one(const float * const restrict v,const unsigned n) {
     const float *c=v+n;
     while(c-->v) if(*c>(1.0f+EPS)) return 1;
@@ -102,6 +138,64 @@ static void idx2coord(float * restrict r,unsigned idx,const unsigned * const res
     r[2]=idx%shape[2];
 }
 
+/*
+ * INTERFACE
+ */
+
+struct ctx {
+    TPixel *src,*dst;
+    unsigned src_shape[3],dst_shape[3];
+    unsigned src_strides[4],dst_strides[4];
+};
+
+static int init(struct resampler* self,
+                const unsigned * const shape,     /* output volume pixelation */
+                const unsigned ndim
+               ) {
+    ASSERT(ndim==3);
+    memset(self,0,sizeof(*self));
+    ASSERT(self->ctx=(struct ctx*)malloc(sizeof(struct ctx)));
+    {
+        struct ctx * const c=self->ctx;
+        memset(c,0,sizeof(*c));
+        memcpy(c->dst_shape,shape,sizeof(c->dst_shape));
+        cumprod(c->dst_strides,shape,3);
+        ASSERT(c->dst=(TPixel*)malloc(c->dst_strides[3]*sizeof(TPixel)));
+        memset(c->dst,0,c->dst_strides[3]*sizeof(TPixel));
+    }
+    return 1;
+}
+
+static void release(struct resampler *self) {
+    if(self->ctx) {
+        struct ctx * c=self->ctx;
+        free(c->dst);
+        /*free(c->src);   NOT MALLOC'D./  Just refs the input pointer. So not owned by this object.*/
+        self->ctx=0;        
+    }
+}
+
+
+static int source(const struct resampler * self,
+                  TPixel * const src,
+                  const unsigned * const shape,
+                  const unsigned ndim)
+{
+    ASSERT(ndim==3);
+    struct ctx * const ctx=self->ctx;
+    cumprod(ctx->src_strides,shape,3);
+    memcpy(ctx->src_shape,shape,sizeof(ctx->src_shape));
+    ctx->src=src;
+    return 1;
+}
+
+static int result(const struct resampler * const self,
+                  TPixel * const dst)
+{
+    struct ctx * const ctx=self->ctx;
+    memcpy(dst,ctx->dst,ctx->dst_strides[3]*sizeof(TPixel));
+    return 1;
+}
 
 /* THE CRUX */
 
@@ -190,9 +284,8 @@ static void worker(void *param) {
 
 #include <thread.h>
 
-static void resample(TPixel * const restrict dst,const unsigned * const restrict dst_shape,const unsigned * const restrict dst_strides,
-                     TPixel * const restrict src,const unsigned * const restrict src_shape,const unsigned * const restrict src_strides,
-                     const float * restrict cubeverts) {
+static int resample(struct resampler * const self,
+                     const float * const cubeverts) {
     /* Approach
 
     1. Build tetrahedra from cube vertices
@@ -208,6 +301,15 @@ static void resample(TPixel * const restrict dst,const unsigned * const restrict
     thread_t ts[8]={0};
     struct work jobs[8]={0};
     unsigned i;
+
+    struct ctx * const ctx=self->ctx;
+    TPixel * const restrict         dst         = ctx->dst;
+    const unsigned * const restrict dst_shape   = ctx->dst_shape;
+    const unsigned * const restrict dst_strides = ctx->dst_strides;
+    TPixel * const restrict         src         = ctx->src;
+    const unsigned * const restrict src_shape   = ctx->src_shape;
+    const unsigned * const restrict src_strides = ctx->src_strides;
+
     for(i=0;i<5;i++)
         tetrahedron(tetrads+i,cubeverts,indexes[i]); // TODO: VERIFY the indexing on "indexes" works correctly here
 
@@ -219,13 +321,18 @@ static void resample(TPixel * const restrict dst,const unsigned * const restrict
     }
     for(i=0;i<NTHREADS;++i) thread_join(ts+i,-1);
     for(i=0;i<NTHREADS;++i) thread_release(ts+i);
-
+    return 1;
 }
 
 static int runTests(void);
 
 const struct resampler_api BarycentricCPU = {
+    init,
+    source,
+    result,
     resample,
+    release,
+    useReporters,
     runTests
 };
 
@@ -237,10 +344,6 @@ static unsigned eq(const float *a,const float *b,int n) {
     for(i=0;i<n;++i) if(a[i]!=b[i]) return 0;
     return 1;
 }
-
-#include <stdio.h>
-#include <stdlib.h>
-#define ASSERT(e) do{if(!(e)) {printf("%s(%d): %s()(\n\tExpression evaluated as false.\n\t%s\n",__FILE__,__LINE__,__FUNCTION__,#e); return 1; }}while(0)
 
 static int test_testrahedron(void) {
     const unsigned idx[]={1,4,5,7};
@@ -268,7 +371,7 @@ static int test_sum(void) {
 }
 
 static int test_map(void) {
-    printf("TODO: %s()\n",__FUNCTION__);
+    WARN(0,"TODO");
     return 0;
 }
 

@@ -40,14 +40,18 @@ int main(int argc,char* argv[]) {
 
         unsigned x,y,z,i=0;
         for(z=0;z<64;++z) for(y=0;y<64;++y) for(x=0;x<64;++x,++i) {
-            src[i]=(x/3)^(y/3)^(z/3);            
+            src[i]=(x/3)^(y/3)^(z/3);
         }
-                
     }
 
-    BarycentricCPU.resample(dst,dst_shape,dst_stride,
-                            src,src_shape,src_stride,
-                            cube);
+    {
+        struct resampler r;
+        ASSERT( BarycentricCPU.init  (&r,dst_shape,3));
+        ASSERT( BarycentricCPU.source(&r,src,src_shape,3));
+        ASSERT( BarycentricCPU.resample(&r,cube));
+        ASSERT( BarycentricCPU.result(&r,dst));
+                BarycentricCPU.release(&r);
+    }
 
 #if 1
     ndioAddPluginPath("plugins");

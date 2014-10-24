@@ -16,9 +16,9 @@ static unsigned eq(const TPixel * const a, const TPixel * const b,unsigned n) {
     return 1;
 }
 
-#define NX (512)
-#define NY (512)
-#define NZ (512)
+#define NX (256)
+#define NY (256)
+#define NZ (256)
 
 
 const unsigned src_shape []={NX,NY,NZ};
@@ -83,13 +83,17 @@ int main(int argc,char* argv[]) {
     }
 
     {
+        struct resampler r;
+        ASSERT( BarycentricCPU.init  (&r,dst_shape,3));
+        ASSERT( BarycentricCPU.source(&r,src,src_shape,3));
+
         TicTocTimer t=tic();
-        BarycentricCPU.resample(dst,dst_shape,dst_stride,
-                             src,src_shape,src_stride,
-                             cube);
+        ASSERT( BarycentricCPU.resample(&r,cube));
         printf("TIME %fs\n",toc(&t));
+
+        ASSERT( BarycentricCPU.result(&r,dst));
+                BarycentricCPU.release(&r);
     }
-    
 
 #if 1
     ndioAddPluginPath("plugins");
