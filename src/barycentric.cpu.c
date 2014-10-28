@@ -62,10 +62,12 @@ static float sum(const float * const restrict v, const unsigned n) {
     return s;
 }
 
+#if 0 // unused?
 static float thresh(float *v,const unsigned n,const float thresh) {
     float *c=v+n;
     while(c-->v) *c*=((*c<=-thresh)||(*c>=thresh));
 }
+#endif
 
 /* 
     Maps source points into barycentric coordinates.
@@ -104,11 +106,13 @@ static void cumprod(unsigned * const out, const unsigned * const v, unsigned n) 
     for(i=1;i<n;++i) out[i]=out[i-1]*v[i];
 }
 
+#if 0 // unused
 static unsigned any_greater_than_one(const float * const restrict v,const unsigned n) {
     const float *c=v+n;
     while(c-->v) if(*c>(1.0f+EPS)) return 1;
     return 0;
 }
+#endif
 
 static unsigned any_less_than_zero(const float * const restrict v,const unsigned n) {
     const float *c=v+n;
@@ -381,6 +385,7 @@ static int test_prod(void) {
     return 0;
 }
 
+#if 0 
 static int test_any_greater_than_one(void) {
     float yes[]={4.0f,-0.1f,4.0f,3.5f};
     float  no[]={-4.0f, -2.0f,-4.0f,-3.5f};
@@ -388,6 +393,7 @@ static int test_any_greater_than_one(void) {
     ASSERT(any_greater_than_one( no,4)==0);
     return 0;
 }
+#endif
 
 static int test_find_best_tetrad(void) {
     float first[]={0.1f,0.5f,0.7f,0.3f};
@@ -413,7 +419,7 @@ static int (*tests[])(void)={
     test_sum,
     test_map,
     test_prod,
-    test_any_greater_than_one,
+    //test_any_greater_than_one,
     test_find_best_tetrad,
     test_idx2coord,
 };

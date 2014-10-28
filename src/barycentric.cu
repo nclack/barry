@@ -2,6 +2,7 @@
 #include <cuda.h>
 #include <stdlib.h>
 #include <cuda_runtime.h>
+#include <matrix.h>
 
 #include <cstring>
 
@@ -78,8 +79,8 @@ texture<TPixel,cudaTextureType3D,cudaReadModeElementType> in;
 
 struct ctx_t {
     cudaArray *src;
-    TPixel    *out;   // cuda device pointer
-    unsigned shape[3];
+    TPixel    *out;    // cuda device pointer
+    unsigned shape[3]; // output shape
 };
 
 static int init(struct resampler* self,
@@ -153,9 +154,124 @@ static int download(const struct resampler* self, TPixel * const dst) {
     return 1;
 }
 
+struct tetrahedron {
+    float T[9];
+    float ori[3];
+};
+
+static void tetrahedron(struct tetrahedron *self, const float * const v, const unsigned * idx) {
+    const float T[9] = {
+        v[3*idx[0]  ]-v[3*idx[3]  ],v[3*idx[1]  ]-v[3*idx[3]  ],v[3*idx[2]  ]-v[3*idx[3]  ],
+        v[3*idx[0]+1]-v[3*idx[3]+1],v[3*idx[1]+1]-v[3*idx[3]+1],v[3*idx[2]+1]-v[3*idx[3]+1],
+        v[3*idx[0]+2]-v[3*idx[3]+2],v[3*idx[1]+2]-v[3*idx[3]+2],v[3*idx[2]+2]-v[3*idx[3]+2],
+    };
+    Matrixf.inv33(self->T,T); 
+    memcpy(self->ori,v+3*idx[3],sizeof(self->ori));
+};
+
+/* KERNEL */
+
+inline __device__ unsigned prod(dim3 a)            {return a.x*a.y*a.z;}
+inline __device__ unsigned stride(uint3 a, dim3 b) {return a.x+b.x*(a.y+b.y*a.z);}
+inline __device__ unsigned sum(uint3 a)            {return a.x+a.y+a.z;}
+
+inline __device__ 
+void map(const struct tetrahedron * const restrict self,
+         float * restrict dst,
+         const float * const restrict src) {
+    float tmp[3];
+    memcpy(tmp,src,sizeof(float)*3);
+    {
+        const float * const o = self->ori;
+        tmp[0]-=o[0];
+        tmp[1]-=o[1];
+        tmp[2]-=o[2];
+    }
+    Matrixf.mul(dst,self->T,3,3,tmp,1);    
+    dst[3]=1.0f-sum(dst,3);
+}
+
+inline __device__
+unsigned find_best_tetrad(const float * const restrict ls) {
+    float v=ls[0];
+    unsigned i,argmin=0;
+    for(i=1;i<4;++i) {
+        if(ls[i]<v) {
+            v=ls[i];
+            argmin=i;
+        }
+    }
+    if(v>=0.0f)
+        return 0;
+    return argmin+1;
+}
+
+inline __device__
+unsigned any_less_than_zero(const float * const restrict v,const unsigned n) {
+    const float *c=v+n;
+    //while(c-->v) if(*c<EPS) return 1; // use this to show off the edges of the middle tetrad
+    while(c-->v) if(*c<-EPS) return 1;
+    return 0;
+}
+
+inline __device__ 
+void idx2coord(float * restrict r,unsigned idx,const unsigned * const restrict shape) {
+    r[0]=idx%shape[0];  idx/=shape[0];
+    r[1]=idx%shape[1];  idx/=shape[1];
+    r[2]=idx%shape[2];
+}
+
+__global__ void resample_k() {
+    unsigned idst = sum(threadIdx)+stride(blockIdx,gridDim)*prod(blockDim);
+
+            float r[3],lambdas[4];
+            unsigned itetrad;
+            idx2coord(r,idst,dst_shape);
+            map(tetrads,lambdas,r);             // Map center tetrahedron
+            
+            itetrad=find_best_tetrad(lambdas);
+            if(itetrad>0) {
+                map(tetrads+itetrad,lambdas,r);   // Map best tetrahedron
+            }
+            
+            if(any_less_than_zero(lambdas,4)) // other boundary
+                continue;
+
+            // Map source index
+            {
+                unsigned idim,ilambda,isrc=0;
+                for(idim=0;idim<3;++idim) {
+                    float s=0.0f;
+                    const float d=(float)(src_shape[idim]);
+                    for(ilambda=0;ilambda<4;++ilambda) {
+                        const float      w=lambdas[ilambda];
+                        const unsigned idx=indexes[itetrad][ilambda];
+                        s+=w*BIT(idx,idim);
+                    }
+                    s*=d;
+                    s=(s<0.0f)?0.0f:(s>(d-1))?(d-1):s;
+                    isrc+=src_strides[idim]*((unsigned)s); // important to floor here.  can't change order of sums
+                }
+                dst[idst]=src[isrc];
+            }
+}
+
+
 static int resample(struct resampler * const self,
                      const float * const cubeverts) {
-    /* upload to texture */
+
+    struct tetrahedron tetrads[5];
+    struct work jobs[8]={0};
+    unsigned i;
+
+    for(i=0;i<5;i++)
+        tetrahedron(tetrads+i,cubeverts,indexes[i]); // TODO: VERIFY the indexing on "indexes" works correctly here
+
+    dim3 block(16,16),
+         grid((w+block.x-1)/block.x,
+              (h+block.y-1)/block.y);
+    resample_k<<<grid,block>>>(*self);
+    
     return 1;
 }
 
@@ -235,8 +351,27 @@ namespace simpleTransformWithTexture {
 
 /* Test directory */
 
+static int test_testrahedron(void) {
+    const unsigned idx[]={1,4,5,7};
+    float v[8*3]={0};
+    int i;
+    struct tetrahedron ans;
+    struct tetrahedron expected={
+            {18.0f,19.0f,20.0f}
+    };
+    for(i=0;i<8;++i) {
+        v[3*i+0]=(float)BIT(i,0);
+        v[3*i+1]=(float)BIT(i,1);
+        v[3*i+2]=(float)BIT(i,2);
+    }
+    tetrahedron(&ans,v,idx);
+    ASSERT(eq(ans.ori,v+3*7,3));
+    return 0;
+}
+
 static int (*tests[])(void)={
-    simpleTransformWithTexture::simpleTransformWithTexture
+    simpleTransformWithTexture::simpleTransformWithTexture,
+    test_testrahedron,
 };
 
 static int runTests() {
