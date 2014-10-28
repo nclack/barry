@@ -6,6 +6,9 @@
 
 #include <cstring>
 
+#define EPS (1e-5f)
+#define BIT(k,i) (((k)>>(i))&1)
+
 /*
  *  LOGGING
  */
@@ -188,7 +191,7 @@ void map(const struct tetrahedron * const restrict self,
         tmp[2]-=o[2];
     }
     Matrixf.mul(dst,self->T,3,3,tmp,1);    
-    dst[3]=1.0f-sum(dst,3);
+    dst[3]=1.0f-dst[0]-dst[1]-dst[2];
 }
 
 inline __device__
@@ -261,19 +264,43 @@ static int resample(struct resampler * const self,
                      const float * const cubeverts) {
 
     struct tetrahedron tetrads[5];
-    struct work jobs[8]={0};
-    unsigned i;
+    for(unsigned i=0;i<5;i++)
+        tetrahedron(tetrads+i,cubeverts,indexes[i]);
 
-    for(i=0;i<5;i++)
-        tetrahedron(tetrads+i,cubeverts,indexes[i]); // TODO: VERIFY the indexing on "indexes" works correctly here
+    try {
+        unsigned r,
+                 blocks=(unsigned)ceil(dst.nelem/float(BLOCKSIZE)),
+                 tpb   =BLOCKSIZE;  
+        const unsigned b=blocks;
+        struct cudaDeviceProp prop;
+        dim3 grid,
+             threads=make_uint3(tpb,1,1);
 
-    dim3 block(16,16),
-         grid((w+block.x-1)/block.x,
-              (h+block.y-1)/block.y);
-    resample_k<<<grid,block>>>(*self);
-    
-    return 1;
+        CUTRY(cudaGetDeviceProperties(&prop,0));
+        INFO("MAX GRID: %7d %7d %7d"ENDL,prop.maxGridSize[0],prop.maxGridSize[1],prop.maxGridSize[2]);
+        // Pack our 1d indexes into cuda's 3d indexes
+        ASSERT(grid.x=nextdim(blocks,prop.maxGridSize[0],&r));
+        blocks/=grid.x;
+        blocks+=r;
+        ASSERT(grid.y=nextdim(blocks,prop.maxGridSize[1],&r));
+        blocks/=grid.y;
+        blocks+=r;
+        ASSERT(grid.z=blocks);
+        INFO("    GRID: %7d %7d %7d"ENDL,grid.x,grid.y,grid.z);
+
+        INFO("blocks:%u threads/block:%u\n",b,tpb);
+        resample_k<TSRC,TDST><<<grid,threads>>>(*self,tetrads);
+
+        CUTRY(cudaGetLastError());
+    } catch(int) {
+        return 1;
+    }
+    return 0;
 }
+
+/*           */
+/* INTERFACE */
+/*           */
 
 static int runTests(void);
 
