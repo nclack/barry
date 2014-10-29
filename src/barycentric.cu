@@ -1,8 +1,9 @@
 #include <resamplers.h>
-#include <cuda.h>
 #include <stdlib.h>
-#include <cuda_runtime.h>
-#include <matrix.h>
+
+#include "cuda.h"
+#include "cuda_runtime.h"
+#include "device_launch_parameters.h"
 
 #include <cstring>
 
@@ -14,6 +15,11 @@
  */
 
 #include <stdio.h>
+#ifdef _MSC_VER
+#define  _CRT_SECURE_NO_WARNINGS
+#define snprintf _snprintf
+#endif
+
 static void default_reporter(const char* msg, const char* expr, const char* file, int line, const char* function,void* usr) {
     (void)usr;
     printf("%s(%d) - %s()\n\t%s\n\t%s\n",file,line,function,msg,expr);
@@ -37,9 +43,9 @@ static void useReporters(
     reporter_context_=usr;
 }
 
-#define ERR(e,msg)  error_(msg,#e,__FILE__,__LINE__,__FUNCTION__,reporter_context_)
-#define WARN(e,msg) warning_(msg,#e,__FILE__,__LINE__,__FUNCTION__,reporter_context_)
-#define INFO(e,msg) info_(msg,#e,__FILE__,__LINE__,__FUNCTION__,reporter_context_)
+#define ERR(e,...)  do{char msg[1024]; snprintf(msg,sizeof(msg),__VA_ARGS__); error_  (msg,#e,__FILE__,__LINE__,__FUNCTION__,reporter_context_);}while(0)
+#define WARN(e,...) do{char msg[1024]; snprintf(msg,sizeof(msg),__VA_ARGS__); warning_(msg,#e,__FILE__,__LINE__,__FUNCTION__,reporter_context_);}while(0)
+#define INFO(...)   do{char msg[1024]; snprintf(msg,sizeof(msg),__VA_ARGS__); info_   (msg,"Info",__FILE__,__LINE__,__FUNCTION__,reporter_context_);}while(0)
 
 #define ASSERT(e) do{if(!(e)) {ERR(e,"Expression evaluated as false."); throw 1; }} while(0)
 #define CUTRY(e)  do{cudaError_t ecode=(e); if(ecode!=cudaSuccess) {ERR(e,cudaGetErrorString(ecode)); throw 1; }} while(0)
@@ -82,8 +88,21 @@ texture<TPixel,cudaTextureType3D,cudaReadModeElementType> in;
 
 struct ctx_t {
     cudaArray *src;
-    TPixel    *out;    // cuda device pointer
-    unsigned shape[3]; // output shape
+    TPixel    *dst;          // cuda device pointer
+    unsigned   dst_shape[3]; // output shape
+    unsigned   src_shape[3]; // input shape
+};
+
+struct tetrahedron {
+    float T[9];
+    float ori[3];
+};
+
+struct work {
+    TPixel   *dst;          // cuda device pointer
+    unsigned  src_shape[3];
+    unsigned  dst_shape[3];
+    struct tetrahedron tetrads[5];
 };
 
 static int init(struct resampler* self,
@@ -94,8 +113,8 @@ static int init(struct resampler* self,
         ASSERT(ndim==3);
         ctx_t *c=new ctx_t;
         self->ctx=c;
-        memcpy(c->shape,shape,sizeof(c->shape));
-        CUTRY(cudaMalloc(&c->out,sizeof(TPixel)*prod(shape,3)));
+        memcpy(c->dst_shape,shape,sizeof(c->dst_shape));
+        CUTRY(cudaMalloc(&c->dst,sizeof(TPixel)*prod(shape,3)));
     } catch(int) {
         return 0;
     }
@@ -106,7 +125,7 @@ static void release(struct resampler* self) {
     try {
         if(self->ctx) {
             ctx_t *c=(ctx_t*)self->ctx;
-            CUTRY(cudaFree(c->out));
+            CUTRY(cudaFree(c->dst));
             cudaFreeArray(c->src);
             delete c;
             self->ctx=0;
@@ -119,6 +138,7 @@ static int upload(struct resampler* self,TPixel * const src,const unsigned * con
     try { /* CUTRY macro throws ints */
         ctx_t *c=(ctx_t*)self->ctx;
         ASSERT(ndim==3);
+        memcpy(c->src_shape,shape,sizeof(*shape)*ndim);
       
         in.addressMode[0]=cudaAddressModeClamp;
         in.addressMode[1]=cudaAddressModeClamp;
@@ -150,17 +170,41 @@ static int upload(struct resampler* self,TPixel * const src,const unsigned * con
 static int download(const struct resampler* self, TPixel * const dst) {
     try {
         ctx_t *ctx=(ctx_t*)self->ctx;
-        CUTRY(cudaMemcpy(dst,ctx->out,sizeof(TPixel)*prod(ctx->shape,3),cudaMemcpyDeviceToHost));
+        CUTRY(cudaMemcpy(dst,ctx->dst,sizeof(TPixel)*prod(ctx->dst_shape,3),cudaMemcpyDeviceToHost));
     } catch(int) {
         return 0;
     }
     return 1;
 }
 
-struct tetrahedron {
-    float T[9];
-    float ori[3];
-};
+static float* inv33(float * restrict inverse,const float * const restrict t) {
+#define det(a,b,c,d) (t[a]*t[d]-t[b]*t[c])
+    const float n=t[0]*det(4,5,7,8)-t[1]*det(3,5,6,8)+t[2]*det(3,4,6,7);
+    float invT[3][3]={
+            {det(4,5,7,8)/n,det(2,1,8,7)/n,det(1,2,4,5)/n},
+            {det(5,3,8,6)/n,det(0,2,6,8)/n,det(2,0,5,3)/n},
+            {det(3,4,6,7)/n,det(1,0,7,6)/n,det(0,1,3,4)/n},
+    };
+#undef det
+    memcpy(inverse,invT,sizeof(invT));
+    return inverse;
+}
+
+static __device__ float* mul(float * restrict dst,
+                  const float * const restrict lhs,const unsigned nrows_lhs,const unsigned ncols_lhs,
+                  const float * const restrict rhs,const unsigned ncols_rhs) {
+    unsigned i,j,k;
+    for(k=0;k<nrows_lhs;++k) {
+        for(j=0;j<ncols_rhs;++j) {
+            float s=0.0f;
+            for(i=0;i<ncols_lhs;++i) {
+                s+=lhs[ncols_lhs*k+i]*rhs[ncols_rhs*i+j];
+            }
+            dst[ncols_rhs*k+j]=s;
+        }
+    }
+    return dst;
+}
 
 static void tetrahedron(struct tetrahedron *self, const float * const v, const unsigned * idx) {
     const float T[9] = {
@@ -168,7 +212,7 @@ static void tetrahedron(struct tetrahedron *self, const float * const v, const u
         v[3*idx[0]+1]-v[3*idx[3]+1],v[3*idx[1]+1]-v[3*idx[3]+1],v[3*idx[2]+1]-v[3*idx[3]+1],
         v[3*idx[0]+2]-v[3*idx[3]+2],v[3*idx[1]+2]-v[3*idx[3]+2],v[3*idx[2]+2]-v[3*idx[3]+2],
     };
-    Matrixf.inv33(self->T,T); 
+    inv33(self->T,T); 
     memcpy(self->ori,v+3*idx[3],sizeof(self->ori));
 };
 
@@ -190,7 +234,7 @@ void map(const struct tetrahedron * const restrict self,
         tmp[1]-=o[1];
         tmp[2]-=o[2];
     }
-    Matrixf.mul(dst,self->T,3,3,tmp,1);    
+    mul(dst,self->T,3,3,tmp,1);    
     dst[3]=1.0f-dst[0]-dst[1]-dst[2];
 }
 
@@ -224,52 +268,77 @@ void idx2coord(float * restrict r,unsigned idx,const unsigned * const restrict s
     r[2]=idx%shape[2];
 }
 
-__global__ void resample_k() {
+/* 4 indexes each for 5 tetrads; the first is the center tetrad */
+static __constant__ unsigned indexes[5][4]={
+        {1,2,4,7},
+        {2,4,6,7}, // opposite 1
+        {1,4,5,7}, // opposite 2
+        {1,2,3,7}, // opposite 4
+        {0,1,2,4}  // opposite 7
+};
+
+__global__ void resample_k(struct work work) {
     unsigned idst = sum(threadIdx)+stride(blockIdx,gridDim)*prod(blockDim);
 
             float r[3],lambdas[4];
             unsigned itetrad;
-            idx2coord(r,idst,dst_shape);
-            map(tetrads,lambdas,r);             // Map center tetrahedron
+            idx2coord(r,idst,work.dst_shape);
+            map(work.tetrads,lambdas,r);             // Map center tetrahedron
             
             itetrad=find_best_tetrad(lambdas);
             if(itetrad>0) {
-                map(tetrads+itetrad,lambdas,r);   // Map best tetrahedron
+                map(work.tetrads+itetrad,lambdas,r);   // Map best tetrahedron
             }
             
-            if(any_less_than_zero(lambdas,4)) // other boundary
-                continue;
-
-            // Map source index
-            {
-                unsigned idim,ilambda,isrc=0;
+            if(!any_less_than_zero(lambdas,4)) // other boundary                            
+            {   
+                // Map source index
+                unsigned idim,ilambda;
+                float r[3];
                 for(idim=0;idim<3;++idim) {
                     float s=0.0f;
-                    const float d=(float)(src_shape[idim]);
                     for(ilambda=0;ilambda<4;++ilambda) {
                         const float      w=lambdas[ilambda];
                         const unsigned idx=indexes[itetrad][ilambda];
-                        s+=w*BIT(idx,idim);
+                        s+=w*BIT(idx,idim);                        
                     }
-                    s*=d;
-                    s=(s<0.0f)?0.0f:(s>(d-1))?(d-1):s;
-                    isrc+=src_strides[idim]*((unsigned)s); // important to floor here.  can't change order of sums
+                    r[idim]=s;
+                    //s=(s<0.0f)?0.0f:(s>(d-1))?(d-1):s;
+                    //isrc+=src_strides[idim]*((unsigned)s); // important to floor here.  can't change order of sums
                 }
-                dst[idst]=src[isrc];
+
+                work.dst[idst]=tex3D(in,r[0],r[1],r[2]);
             }
 }
 
 
+static unsigned nextdim(unsigned n, unsigned limit, unsigned *rem)
+{ unsigned v=limit,c=limit,low=n/limit,argmin=0,min=limit;
+  *rem=0;  
+  if(n<limit) return n;
+  for(c=low+1;c<limit&&v>0;c++)
+  { v=(unsigned)(c*ceil(n/(float)c)-n);
+    if(v<min)
+    { min=v;
+      argmin=c;
+    }
+  }
+  *rem= (min!=0);
+  return argmin;
+}
+
 static int resample(struct resampler * const self,
                      const float * const cubeverts) {
 
-    struct tetrahedron tetrads[5];
+    struct work work={0};//tetrahedron tetrads[5]
+    ctx_t * const c=(ctx_t*)self->ctx;
+    work.dst=c->dst;
     for(unsigned i=0;i<5;i++)
-        tetrahedron(tetrads+i,cubeverts,indexes[i]);
+        tetrahedron(work.tetrads+i,cubeverts,indexes[i]);
 
     try {
         unsigned r,
-                 blocks=(unsigned)ceil(dst.nelem/float(BLOCKSIZE)),
+                 blocks=(unsigned)ceil(prod(c->dst_shape,3)/float(BLOCKSIZE)),
                  tpb   =BLOCKSIZE;  
         const unsigned b=blocks;
         struct cudaDeviceProp prop;
@@ -277,7 +346,7 @@ static int resample(struct resampler * const self,
              threads=make_uint3(tpb,1,1);
 
         CUTRY(cudaGetDeviceProperties(&prop,0));
-        INFO("MAX GRID: %7d %7d %7d"ENDL,prop.maxGridSize[0],prop.maxGridSize[1],prop.maxGridSize[2]);
+        INFO("MAX GRID: %7d %7d %7d",prop.maxGridSize[0],prop.maxGridSize[1],prop.maxGridSize[2]);
         // Pack our 1d indexes into cuda's 3d indexes
         ASSERT(grid.x=nextdim(blocks,prop.maxGridSize[0],&r));
         blocks/=grid.x;
@@ -286,10 +355,10 @@ static int resample(struct resampler * const self,
         blocks/=grid.y;
         blocks+=r;
         ASSERT(grid.z=blocks);
-        INFO("    GRID: %7d %7d %7d"ENDL,grid.x,grid.y,grid.z);
+        INFO("    GRID: %7d %7d %7d",grid.x,grid.y,grid.z);
 
-        INFO("blocks:%u threads/block:%u\n",b,tpb);
-        resample_k<TSRC,TDST><<<grid,threads>>>(*self,tetrads);
+        INFO("blocks:%u threads/block:%u",b,tpb);
+        resample_k<<<grid,threads>>>(work);
 
         CUTRY(cudaGetLastError());
     } catch(int) {
@@ -378,14 +447,23 @@ namespace simpleTransformWithTexture {
 
 /* Test directory */
 
+
+static unsigned eq(const float *a,const float *b,int n) {
+    int i;
+    for(i=0;i<n;++i) if(a[i]!=b[i]) return 0;
+    return 1;
+}
+
 static int test_testrahedron(void) {
     const unsigned idx[]={1,4,5,7};
     float v[8*3]={0};
     int i;
     struct tetrahedron ans;
+    /* unused?
     struct tetrahedron expected={
             {18.0f,19.0f,20.0f}
     };
+    */
     for(i=0;i<8;++i) {
         v[3*i+0]=(float)BIT(i,0);
         v[3*i+1]=(float)BIT(i,1);
