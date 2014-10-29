@@ -17,9 +17,9 @@ static unsigned eq(const TPixel * const a, const TPixel * const b,unsigned n) {
     return 1;
 }
 
-#define NX (256)
-#define NY (256)
-#define NZ (256)
+#define NX (512)
+#define NY (512)
+#define NZ (512)
 
 
 const unsigned src_shape []={NX,NY,NZ};

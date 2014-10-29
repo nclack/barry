@@ -102,8 +102,8 @@ static unsigned prod(const unsigned * const v,unsigned n) {
 
 static void cumprod(unsigned * const out, const unsigned * const v, unsigned n) {
     unsigned i;
-    out[0]=v[0];
-    for(i=1;i<n;++i) out[i]=out[i-1]*v[i];
+    out[0]=1;
+    for(i=1;i<=n;++i) out[i]=out[i-1]*v[i-1];
 }
 
 #if 0 // unused
