@@ -14,7 +14,7 @@ include_directories(src)
 file(GLOB_RECURSE CUSRCS src/*.cu)
 cuda_compile(CUFILES ${CUSRCS} STATIC
       OPTIONS
-      DEBUG -g;-G;-lineinfo
+      DEBUG -g;-G;-lineinfo;-Xptxas="-v"
       RELEASE --use_fast_math
       RELWITHDEBINFO --use_fast_math;-g;-G;-lineinfo
       MINSIZEREL --use_fast_math

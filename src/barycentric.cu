@@ -56,10 +56,7 @@ static void useReporters(
 
 #define countof(e) (sizeof(e)/sizeof(*(e)))
 
-#define WARPS_PER_BLOCK  4
-#define BLOCKSIZE       (32*WARPS_PER_BLOCK) // threads per block
-
-#define restrict __restrict
+#define restrict __restrict__
 
 template<typename t> cudaChannelFormatKind channelformatkind(void);
 template<> cudaChannelFormatKind channelformatkind<uint8_t >(void) {return cudaChannelFormatKindUnsigned;}
@@ -190,6 +187,7 @@ static float* inv33(float * restrict inverse,const float * const restrict t) {
     return inverse;
 }
 
+/*
 static __device__ float* mul(float * restrict dst,
                   const float * const restrict lhs,const unsigned nrows_lhs,const unsigned ncols_lhs,
                   const float * const restrict rhs,const unsigned ncols_rhs) {
@@ -205,6 +203,7 @@ static __device__ float* mul(float * restrict dst,
     }
     return dst;
 }
+*/
 
 static void tetrahedron(struct tetrahedron *self, const float * const v, const unsigned * idx) {
     const float T[9] = {
@@ -218,58 +217,61 @@ static void tetrahedron(struct tetrahedron *self, const float * const v, const u
 
 /* KERNEL */
 
-inline __device__ unsigned prod(dim3 a)            {return a.x*a.y*a.z;}
-inline __device__ unsigned stride(uint3 a, dim3 b) {return a.x+b.x*(a.y+b.y*a.z);}
-inline __device__ unsigned sum(uint3 a)            {return a.x+a.y+a.z;}
+inline __device__ unsigned prod(const dim3 a)                  {return a.x*a.y*a.z;}
+inline __device__ unsigned stride(const uint3 a, const dim3 b) {return a.x+b.x*(a.y+b.y*a.z);}
+inline __device__ unsigned sum(const uint3 a)                  {return a.x+a.y+a.z;}
 
 inline __device__ 
 void map(const struct tetrahedron * const restrict self,
          float * restrict dst,
          const float * const restrict src) {
-    float tmp[3];
-    memcpy(tmp,src,sizeof(float)*3);
-    {
-        const float * const o = self->ori;
-        tmp[0]-=o[0];
-        tmp[1]-=o[1];
-        tmp[2]-=o[2];
+    // Matrix Multiply dst=T*tmp; [3x3].[3x1]
+    {        
+        const float * const T=self->T;
+        const float * const o=self->ori;
+        #pragma unroll
+        for(int k=0;k<3;++k) {
+            dst[k]=T[3*k]*(src[0]-o[0])
+                +T[3*k+1]*(src[1]-o[1])
+                +T[3*k+2]*(src[2]-o[2]);
+        }
     }
-    mul(dst,self->T,3,3,tmp,1);    
     dst[3]=1.0f-dst[0]-dst[1]-dst[2];
 }
 
 inline __device__
 unsigned find_best_tetrad(const float * const restrict ls) {
     float v=ls[0];
-    unsigned i,argmin=0;
-    for(i=1;i<4;++i) {
-        if(ls[i]<v) {
-            v=ls[i];
-            argmin=i;
-        }
+    unsigned argmin=1;
+    if(ls[1]<v) {
+        v=ls[1];
+        argmin=2;
     }
+    if(ls[2]<v) {
+        v=ls[2];
+        argmin=3;
+    }
+    if(ls[3]<v) {
+        v=ls[3];
+        argmin=4;
+    }
+
     if(v>=0.0f)
         return 0;
-    return argmin+1;
+    return argmin;
 }
 
-inline __device__
-unsigned any_less_than_zero(const float * const restrict v,const unsigned n) {
-    const float *c=v+n;
-    //while(c-->v) if(*c<EPS) return 1; // use this to show off the edges of the middle tetrad
-    while(c-->v) if(*c<-EPS) return 1;
-    return 0;
-}
-
-inline __device__ 
-void idx2coord(float * restrict r,unsigned idx,const unsigned * const restrict shape) {
-    r[0]=idx%shape[0];  idx/=shape[0];
-    r[1]=idx%shape[1];  idx/=shape[1];
-    r[2]=idx%shape[2];
-}
+#define any_less_than_zero4(v) ((v[0]<-EPS)||(v[1]<-EPS)||(v[2]<-EPS)||(v[3]<-EPS))       
 
 /* 4 indexes each for 5 tetrads; the first is the center tetrad */
-static __constant__ unsigned indexes[5][4]={
+static __constant__ unsigned indexes_k[5][4]={
+        {1,2,4,7},
+        {2,4,6,7}, // opposite 1
+        {1,4,5,7}, // opposite 2
+        {1,2,3,7}, // opposite 4
+        {0,1,2,4}  // opposite 7
+};
+static const unsigned indexes[5][4]={
         {1,2,4,7},
         {2,4,6,7}, // opposite 1
         {1,4,5,7}, // opposite 2
@@ -277,38 +279,54 @@ static __constant__ unsigned indexes[5][4]={
         {0,1,2,4}  // opposite 7
 };
 
-__global__ void resample_k(struct work work) {
-    unsigned idst = sum(threadIdx)+stride(blockIdx,gridDim)*prod(blockDim);
-
-            float r[3],lambdas[4];
-            unsigned itetrad;
-            idx2coord(r,idst,work.dst_shape);
+template<
+    unsigned BX,
+    unsigned BY,
+    unsigned WORK
+>
+__global__
+void
+__launch_bounds__(BX*BY,1) // max threads, min blocks
+resample_k(const struct work work) {
+    const unsigned idst0 = WORK*(sum(threadIdx)+stride(blockIdx,gridDim)*prod(blockDim));
+    for(unsigned idst=idst0;idst<(idst0+WORK);++idst)
+     {
+        float lambdas[4];
+        unsigned itetrad;
+        {
+            float r[3];
+            {   unsigned idx=idst;
+                r[0]=idx%work.dst_shape[0];  idx/=work.dst_shape[0];
+                r[1]=idx%work.dst_shape[1];  idx/=work.dst_shape[1];
+                r[2]=idx%work.dst_shape[2];
+            }
+        
             map(work.tetrads,lambdas,r);             // Map center tetrahedron
-            
+                
             itetrad=find_best_tetrad(lambdas);
             if(itetrad>0) {
                 map(work.tetrads+itetrad,lambdas,r);   // Map best tetrahedron
             }
-            
-            if(!any_less_than_zero(lambdas,4)) // other boundary                            
-            {   
-                // Map source index
-                unsigned idim,ilambda;
-                float r[3];
-                for(idim=0;idim<3;++idim) {
-                    float s=0.0f;
-                    for(ilambda=0;ilambda<4;++ilambda) {
-                        const float      w=lambdas[ilambda];
-                        const unsigned idx=indexes[itetrad][ilambda];
-                        s+=w*BIT(idx,idim);                        
-                    }
-                    r[idim]=s;
-                    //s=(s<0.0f)?0.0f:(s>(d-1))?(d-1):s;
-                    //isrc+=src_strides[idim]*((unsigned)s); // important to floor here.  can't change order of sums
+        }
+                
+        if(!any_less_than_zero4(lambdas)) // other boundary                            
+        {   
+            // Map source index
+            float r[3];
+            #pragma unroll
+            for(int idim=0;idim<3;++idim) {
+                float s=0.0f;
+                for(int ilambda=0;ilambda<4;++ilambda) {
+                    const float      w=lambdas[ilambda];
+                    const unsigned idx=indexes_k[itetrad][ilambda];
+                    s+=w*BIT(idx,idim);                        
                 }
-
-                work.dst[idst]=tex3D(in,r[0],r[1],r[2]);
+                r[idim]=s;
             }
+
+            work.dst[idst]=tex3D(in,r[0],r[1],r[2]);
+        }
+    }
 }
 
 
@@ -327,19 +345,26 @@ static unsigned nextdim(unsigned n, unsigned limit, unsigned *rem)
   return argmin;
 }
 
+#define BY   4
+#define BX   32
+#define WORK 32
+
 static int resample(struct resampler * const self,
                      const float * const cubeverts) {
 
-    struct work work={0};//tetrahedron tetrads[5]
+    struct work work={0};
     ctx_t * const c=(ctx_t*)self->ctx;
     work.dst=c->dst;
+    memcpy(work.dst_shape,c->dst_shape,sizeof(work.dst_shape));
+    memcpy(work.src_shape,c->src_shape,sizeof(work.dst_shape));
+    
     for(unsigned i=0;i<5;i++)
         tetrahedron(work.tetrads+i,cubeverts,indexes[i]);
 
     try {
         unsigned r,
-                 blocks=(unsigned)ceil(prod(c->dst_shape,3)/float(BLOCKSIZE)),
-                 tpb   =BLOCKSIZE;  
+                 blocks=(unsigned)ceil(prod(c->dst_shape,3)/float(BX*BY*WORK)),
+                 tpb=BX*BY;
         const unsigned b=blocks;
         struct cudaDeviceProp prop;
         dim3 grid,
@@ -358,13 +383,13 @@ static int resample(struct resampler * const self,
         INFO("    GRID: %7d %7d %7d",grid.x,grid.y,grid.z);
 
         INFO("blocks:%u threads/block:%u",b,tpb);
-        resample_k<<<grid,threads>>>(work);
-
+        CUTRY(cudaGetLastError());
+        resample_k<BX,BY,WORK><<<grid,threads>>>(work);
         CUTRY(cudaGetLastError());
     } catch(int) {
-        return 1;
+        return 0;
     }
-    return 0;
+    return 1;
 }
 
 /*           */
@@ -389,7 +414,7 @@ extern "C" const struct resampler_api BarycentricGPU = {
 
 
 /* simpleTransformWithTexture */
-
+#if 0
 namespace simpleTransformWithTexture {
 
     texture<float,cudaTextureType2D,cudaReadModeElementType> src;
@@ -444,6 +469,7 @@ namespace simpleTransformWithTexture {
     }
 
 } // end namespace simpleTransformWithTexture
+#endif
 
 /* Test directory */
 
@@ -475,7 +501,7 @@ static int test_testrahedron(void) {
 }
 
 static int (*tests[])(void)={
-    simpleTransformWithTexture::simpleTransformWithTexture,
+    //simpleTransformWithTexture::simpleTransformWithTexture,
     test_testrahedron,
 };
 
