@@ -112,6 +112,7 @@ static int init(struct resampler* self,
         self->ctx=c;
         memcpy(c->dst_shape,shape,sizeof(c->dst_shape));
         CUTRY(cudaMalloc(&c->dst,sizeof(TPixel)*prod(shape,3)));
+        CUTRY(cudaMemset( c->dst,0,sizeof(TPixel)*prod(shape,3)));
     } catch(int) {
         return 0;
     }
@@ -288,9 +289,11 @@ __global__
 void
 __launch_bounds__(BX*BY,1) // max threads, min blocks
 resample_k(const struct work work) {
-    const unsigned idst0 = WORK*(sum(threadIdx)+stride(blockIdx,gridDim)*prod(blockDim));
-    for(unsigned idst=idst0;idst<(idst0+WORK);++idst)
-     {
+    const unsigned ox=threadIdx.x+blockIdx.x*BX;
+    const unsigned oy=(threadIdx.y+blockIdx.y*BY)*WORK;
+    const unsigned idst0=ox+oy*BX;
+
+    for(unsigned idst=idst0;idst<(idst0+WORK*BX);idst+=BX) {
         float lambdas[4];
         unsigned itetrad;
         {
@@ -309,8 +312,7 @@ resample_k(const struct work work) {
             }
         }
                 
-        if(!any_less_than_zero4(lambdas)) // other boundary                            
-        {   
+        if(!any_less_than_zero4(lambdas)) { // other boundary
             // Map source index
             float r[3];
             #pragma unroll
@@ -345,9 +347,6 @@ static unsigned nextdim(unsigned n, unsigned limit, unsigned *rem)
   return argmin;
 }
 
-#define BY   4
-#define BX   32
-#define WORK 32
 
 static int resample(struct resampler * const self,
                      const float * const cubeverts) {
@@ -362,29 +361,11 @@ static int resample(struct resampler * const self,
         tetrahedron(work.tetrads+i,cubeverts,indexes[i]);
 
     try {
-        unsigned r,
-                 blocks=(unsigned)ceil(prod(c->dst_shape,3)/float(BX*BY*WORK)),
-                 tpb=BX*BY;
-        const unsigned b=blocks;
-        struct cudaDeviceProp prop;
-        dim3 grid,
-             threads=make_uint3(tpb,1,1);
-
-        CUTRY(cudaGetDeviceProperties(&prop,0));
-        INFO("MAX GRID: %7d %7d %7d",prop.maxGridSize[0],prop.maxGridSize[1],prop.maxGridSize[2]);
-        // Pack our 1d indexes into cuda's 3d indexes
-        ASSERT(grid.x=nextdim(blocks,prop.maxGridSize[0],&r));
-        blocks/=grid.x;
-        blocks+=r;
-        ASSERT(grid.y=nextdim(blocks,prop.maxGridSize[1],&r));
-        blocks/=grid.y;
-        blocks+=r;
-        ASSERT(grid.z=blocks);
-        INFO("    GRID: %7d %7d %7d",grid.x,grid.y,grid.z);
-
-        INFO("blocks:%u threads/block:%u",b,tpb);
+        const unsigned BX=32*4,BY=1,WORK=32,N=prod(work.dst_shape,3);
+        dim3 threads(BX,BY),
+             blocks(1,N/BX/BY/WORK);
         CUTRY(cudaGetLastError());
-        resample_k<BX,BY,WORK><<<grid,threads>>>(work);
+        resample_k<BX,BY,WORK><<<blocks,threads>>>(work);
         CUTRY(cudaGetLastError());
     } catch(int) {
         return 0;
