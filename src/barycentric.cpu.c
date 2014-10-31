@@ -153,7 +153,8 @@ struct ctx {
 };
 
 static int init(struct resampler* self,
-                const unsigned * const shape,     /* output volume pixelation */
+                const unsigned * const src_shape,
+                const unsigned * const dst_shape,
                 const unsigned ndim
                ) {
     ASSERT(ndim==3);
@@ -162,10 +163,16 @@ static int init(struct resampler* self,
     {
         struct ctx * const c=self->ctx;
         memset(c,0,sizeof(*c));
-        memcpy(c->dst_shape,shape,sizeof(c->dst_shape));
-        cumprod(c->dst_strides,shape,3);
+        memcpy(c->src_shape,src_shape,sizeof(c->src_shape));
+        cumprod(c->src_strides,src_shape,3);
+        // src just ref'd: no alloc
+    }
+    {
+        struct ctx * const c=self->ctx;
+        memset(c,0,sizeof(*c));
+        memcpy(c->dst_shape,dst_shape,sizeof(c->dst_shape));
+        cumprod(c->dst_strides,dst_shape,3);
         ASSERT(c->dst=(TPixel*)malloc(c->dst_strides[3]*sizeof(TPixel)));
-        memset(c->dst,0,c->dst_strides[3]*sizeof(TPixel));
     }
     return 1;
 }
@@ -181,17 +188,19 @@ static void release(struct resampler *self) {
 
 
 static int source(const struct resampler * self,
-                  TPixel * const src,
-                  const unsigned * const shape,
-                  const unsigned ndim)
+                  TPixel * const src)
 {
-    ASSERT(ndim==3);
     struct ctx * const ctx=self->ctx;
-    cumprod(ctx->src_strides,shape,3);
-    memcpy(ctx->src_shape,shape,sizeof(ctx->src_shape));
     ctx->src=src;
     return 1;
 }
+
+static int destination(struct resampler *self,
+                       TPixel * const dst){
+    struct ctx * const c=self->ctx;
+    memcpy(c->dst,dst,c->dst_strides[3]*sizeof(TPixel));
+    return 1;
+ }
 
 static int result(const struct resampler * const self,
                   TPixel * const dst)
@@ -333,6 +342,7 @@ static int runTests(void);
 const struct resampler_api BarycentricCPU = {
     init,
     source,
+    destination,
     result,
     resample,
     release,

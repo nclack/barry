@@ -103,16 +103,32 @@ struct work {
 };
 
 static int init(struct resampler* self,
-                const unsigned * const shape,     /* output volume pixelation */
+                const unsigned * const src_shape,
+                const unsigned * const dst_shape,
                 const unsigned ndim) {
     try {
         memset(self,0,sizeof(*self));
         ASSERT(ndim==3);
         ctx_t *c=new ctx_t;
         self->ctx=c;
-        memcpy(c->dst_shape,shape,sizeof(c->dst_shape));
-        CUTRY(cudaMalloc(&c->dst,sizeof(TPixel)*prod(shape,3)));
-        CUTRY(cudaMemset( c->dst,0,sizeof(TPixel)*prod(shape,3)));
+        // dst
+        memcpy(c->dst_shape,dst_shape,sizeof(c->dst_shape));
+        CUTRY(cudaMalloc(&c->dst,sizeof(TPixel)*prod(dst_shape,3)));
+        CUTRY(cudaMemset( c->dst,0,sizeof(TPixel)*prod(dst_shape,3)));
+
+        // src
+        memcpy(c->src_shape,src_shape,sizeof(*src_shape)*ndim);
+      
+        in.addressMode[0]=cudaAddressModeClamp;
+        in.addressMode[1]=cudaAddressModeClamp;
+        in.addressMode[2]=cudaAddressModeClamp;
+        in.filterMode=cudaFilterModePoint;
+        in.normalized=1;
+
+        cudaChannelFormatDesc d=cudaCreateChannelDesc(sizeof(TPixel)*8,0,0,0,channelformatkind<TPixel>());
+        const struct cudaExtent extent=make_cudaExtent(src_shape[0],src_shape[1],src_shape[2]);
+        CUTRY(cudaMalloc3DArray(&c->src,&d,extent));
+
     } catch(int) {
         return 0;
     }
@@ -132,33 +148,33 @@ static void release(struct resampler* self) {
     catch(...) {;}
 }
 
-static int upload(struct resampler* self,TPixel * const src,const unsigned * const shape,const unsigned ndim) {
-    try { /* CUTRY macro throws ints */
+static int upload_src(struct resampler* self,TPixel * const src) {
+    try {
         ctx_t *c=(ctx_t*)self->ctx;
-        ASSERT(ndim==3);
-        memcpy(c->src_shape,shape,sizeof(*shape)*ndim);
-      
-        in.addressMode[0]=cudaAddressModeClamp;
-        in.addressMode[1]=cudaAddressModeClamp;
-        in.addressMode[2]=cudaAddressModeClamp;
-        in.filterMode=cudaFilterModePoint;
-        in.normalized=1;
-        { 
-            cudaChannelFormatDesc d=cudaCreateChannelDesc(sizeof(TPixel)*8,0,0,0,channelformatkind<TPixel>());
-            const struct cudaExtent extent=make_cudaExtent(shape[0],shape[1],shape[2]);
-            
-            CUTRY(cudaMalloc3DArray(&c->src,&d,extent));
 
-            // copy data to 3D array
-            cudaMemcpy3DParms copy={0};
-            copy.srcPtr   = make_cudaPitchedPtr(src,shape[0]*sizeof(TPixel),shape[0],shape[1]);
-            copy.dstArray = c->src;
-            copy.extent   = extent;
-            copy.kind     = cudaMemcpyHostToDevice;
-            CUTRY(cudaMemcpy3D(&copy));
+        cudaChannelFormatDesc d=cudaCreateChannelDesc(sizeof(TPixel)*8,0,0,0,channelformatkind<TPixel>());
+        const struct cudaExtent extent=make_cudaExtent(c->src_shape[0],c->src_shape[1],c->src_shape[2]);
 
-            CUTRY(cudaBindTextureToArray(&in,c->src,&d));
-        }
+        // copy data to 3D array
+        cudaMemcpy3DParms copy={0};
+        copy.srcPtr   = make_cudaPitchedPtr(src,c->src_shape[0]*sizeof(TPixel),c->src_shape[0],c->src_shape[1]);
+        copy.dstArray = c->src;
+        copy.extent   = extent;
+        copy.kind     = cudaMemcpyHostToDevice;
+        CUTRY(cudaMemcpy3D(&copy));
+        // bind to texture
+        CUTRY(cudaBindTextureToArray(&in,c->src,&d));
+        
+    } catch(int) { /* CUTRY macro throws ints */
+        return 0;
+    }
+    return 1;
+}
+
+static int upload_dst(struct resampler* self,TPixel * const dst) {
+    try {
+        ctx_t *c=(ctx_t*)self->ctx;
+        CUTRY(cudaMemcpy(c->dst,dst,sizeof(TPixel)*prod(c->dst_shape,3),cudaMemcpyHostToDevice));
     } catch(int) { /* CUTRY macro throws ints */
         return 0;
     }
@@ -381,7 +397,8 @@ static int runTests(void);
 
 extern "C" const struct resampler_api BarycentricGPU = {
     init,
-    upload,
+    upload_src,
+    upload_dst,
     download,
     resample,
     release,

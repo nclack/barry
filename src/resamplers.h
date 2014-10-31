@@ -15,13 +15,14 @@ struct resampler {
 struct resampler_api {
     /* See Notes (1,4) */
     int (*init)(struct resampler* self,
-                const unsigned * const shape,     /* output volume pixelation */
+                const unsigned * const src_shape,
+                const unsigned * const dst_shape,
                 const unsigned ndim
                );
     int (*source)(struct resampler * self,
-                  TPixel * const src,
-                  const unsigned * const shape,
-                  const unsigned ndim);
+                  TPixel * const src);
+    int (*destination)(struct resampler *self,
+                       TPixel * const dst);
     int (*result)(const struct resampler * const self,
                   TPixel * const dst);
     int(*resample)(struct resampler * const self,
@@ -61,6 +62,8 @@ extern const struct resampler_api BarycentricCPU;
 
    1. Renderer will not handle all possible inputs. See Todo (2).
       Assumes dst and src (of course) are allocated by caller.
+
+      ndim MUST BE 3
 
    2. runTests() is here so that static utility functions can be run through
       their paces.  The utility functions are static because they're private

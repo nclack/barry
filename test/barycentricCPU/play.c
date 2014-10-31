@@ -84,8 +84,9 @@ int main(int argc,char* argv[]) {
 
     {
         struct resampler r;
-        ASSERT( BarycentricCPU.init  (&r,dst_shape,3));
-        ASSERT( BarycentricCPU.source(&r,src,src_shape,3));
+        ASSERT( BarycentricCPU.init  (&r,src_shape,dst_shape,3));
+        ASSERT( BarycentricCPU.source(&r,src));
+        ASSERT( BarycentricCPU.destination(&r,dst));
 
         TicTocTimer t=tic();
         ASSERT( BarycentricCPU.resample(&r,cube));
