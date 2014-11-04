@@ -296,6 +296,9 @@ static const unsigned indexes[5][4]={
         {0,1,2,4}  // opposite 7
 };
 
+
+static __constant__ struct work work;
+
 template<
     unsigned BX,
     unsigned BY,
@@ -304,7 +307,7 @@ template<
 __global__
 void
 __launch_bounds__(BX*BY,1) // max threads, min blocks
-resample_k(const struct work work) {
+resample_k(void) {
     const unsigned ox=threadIdx.x+blockIdx.x*BX;
     const unsigned oy=(threadIdx.y+blockIdx.y*BY)*WORK;
     const unsigned idst0=ox+oy*BX;
@@ -342,7 +345,7 @@ resample_k(const struct work work) {
                 r[idim]=s;
             }
 
-            work.dst[idst]=tex3D(in,r[0],r[1],r[2]);
+            work.dst[idst]=max(work.dst[idst],tex3D(in,r[0],r[1],r[2]));
         }
     }
 }
@@ -363,25 +366,26 @@ static unsigned nextdim(unsigned n, unsigned limit, unsigned *rem)
   return argmin;
 }
 
-
 static int resample(struct resampler * const self,
                      const float * const cubeverts) {
 
-    struct work work={0};
+    struct work arg={0};
     ctx_t * const c=(ctx_t*)self->ctx;
-    work.dst=c->dst;
-    memcpy(work.dst_shape,c->dst_shape,sizeof(work.dst_shape));
-    memcpy(work.src_shape,c->src_shape,sizeof(work.dst_shape));
+    printf("sizeof work: %d\n",(int)sizeof(arg));
+    arg.dst=c->dst;
+    memcpy(arg.dst_shape,c->dst_shape,sizeof(arg.dst_shape));
+    memcpy(arg.src_shape,c->src_shape,sizeof(arg.dst_shape));
     
     for(unsigned i=0;i<5;i++)
-        tetrahedron(work.tetrads+i,cubeverts,indexes[i]);
+        tetrahedron(arg.tetrads+i,cubeverts,indexes[i]);
 
     try {
-        const unsigned BX=32*4,BY=1,WORK=32,N=prod(work.dst_shape,3);
+        const unsigned BX=32*4,BY=1,WORK=32,N=prod(arg.dst_shape,3);
         dim3 threads(BX,BY),
              blocks(1,N/BX/BY/WORK);
+        CUTRY(cudaMemcpyToSymbol(work,&arg,sizeof(arg),0));
         CUTRY(cudaGetLastError());
-        resample_k<BX,BY,WORK><<<blocks,threads>>>(work);
+        resample_k<BX,BY,WORK><<<blocks,threads>>>();
         CUTRY(cudaGetLastError());
     } catch(int) {
         return 0;
