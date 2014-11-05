@@ -21,13 +21,13 @@ cuda_compile(CUFILES ${CUSRCS} STATIC
 )
 list(APPEND SRCS ${CUFILES})
 
-add_library(libengine STATIC ${SRCS})
+add_library(engine STATIC ${SRCS})
 
 set(ENGINE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/src)
 function(target_add_engine tgt)
     set_property(TARGET ${tgt} APPEND PROPERTY 
                  INCLUDE_DIRECTORIES ${ENGINE_DIR})
-    target_link_libraries(${tgt} libengine)
+    target_link_libraries(${tgt} engine)
     nd_add_to_target(${tgt} ndio-tiff ndio-ffmpeg)
 endfunction()
 

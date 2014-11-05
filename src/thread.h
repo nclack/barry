@@ -9,7 +9,11 @@ typedef SRWLOCK            mutex_t;
 typedef CONDITION_VARIABLE condition_t;
 
 #else
-#error TODO
+#include <pthread.h>
+typedef pthread_t         thread_t;
+typedef pthread_mutex_t   mutex_t;
+typedef pthread_cond_t    condition_t;
+
 #endif
 
 thread_t    thread_create (void (*f)(void*),void*);
