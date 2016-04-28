@@ -4,10 +4,11 @@
 #include <nd.h>
 #include <tictoc.h>
 
-#define ASSERT(e) do{if(!(e)) {printf("%s(%d): %s()(\n\tExpression evaluated as false.\n\t%s\n",__FILE__,__LINE__,__FUNCTION__,#e); exit(1); }}while(0)
+#define ASSERT(e)  do{if(!(e)) {printf("%s(%d): %s()(\n\tExpression evaluated as false.\n\t%s\n",__FILE__,__LINE__,__FUNCTION__,#e); exit(1); }}while(0)
+#define TIME(e)    do{TicTocTimer t=tic(); {e;} printf("TIME %10fs\t%s\n",toc(&t),#e);} while(0)
 #define countof(e) (sizeof(e)/sizeof(*(e)))
 
-static unsigned eq(const TPixel * const a, const TPixel * const b,unsigned n) {
+static unsigned eq(const TPixel * const a,const TPixel * const b,unsigned n) {
     unsigned i;
     for(i=0;i<n;++i) {
         if(a[i]!=b[i])
@@ -21,26 +22,26 @@ static unsigned eq(const TPixel * const a, const TPixel * const b,unsigned n) {
 #define NZ (512)
 
 
-const unsigned src_shape []={NX,NY,NZ};
+const unsigned src_shape[]={NX,NY,NZ};
 const unsigned src_stride[]={1,NX,NX*NY};
-const unsigned dst_shape []={NX,NY,NZ};
+const unsigned dst_shape[]={NX,NY,NZ};
 const unsigned dst_stride[]={1,NX,NX*NY};
 
 
 #define s (0.5f)
 
 #if 1 
-    // 30 degrees
-    #define sn (0.5f)
-    #define cs (0.866f)
+// 30 degrees
+#define sn (0.5f)
+#define cs (0.866f)
 #elif 0
-    // 5 degrees
-    #define sn (0.0872f)
-    #define cs (0.9962)
+// 5 degrees
+#define sn (0.0872f)
+#define cs (0.9962)
 #elif 1 
-    // 0 degrees
-    #define sn (0.0f)
-    #define cs (1.0f)
+// 0 degrees
+#define sn (0.0f)
+#define cs (1.0f)
 #endif
 
 #define tx(x,y) (( cs*((x)-0.5f)-sn*((y)-0.5f) )*s+0.5f)
@@ -51,9 +52,9 @@ const float cube[]={
     NX*tx(1,0),NY*ty(1,0),0.0*NZ,
     NX*tx(0,1),NY*ty(0,1),0.0*NZ,
     NX*tx(1,1),NY*ty(1,1),0.0*NZ,
-     0, 0,NZ,
-    NX, 0,NZ,
-     0,NY,NZ,
+    0,0,NZ,
+    NX,0,NZ,
+    0,NY,NZ,
     NX,NY,NZ,
 };
 
@@ -84,21 +85,18 @@ int main(int argc,char* argv[]) {
 
     {
         struct resampler r;
-        ASSERT( BarycentricCPU.init  (&r,src_shape,dst_shape,3));
-        ASSERT( BarycentricCPU.source(&r,src));
-        ASSERT( BarycentricCPU.destination(&r,dst));
-
-        TicTocTimer t=tic();
-        ASSERT( BarycentricCPU.resample(&r,cube));
-        printf("TIME %fs\n",toc(&t));
-
-        ASSERT( BarycentricCPU.result(&r,dst));
-                BarycentricCPU.release(&r);
+        TIME(ASSERT(BarycentricCPU.init(&r,src_shape,dst_shape,3)));
+        TIME(ASSERT(BarycentricCPU.source(&r,src)));
+        TIME(ASSERT(BarycentricCPU.destination(&r,dst)));
+        TIME(ASSERT(BarycentricCPU.resample(&r,cube)));
+        TIME(ASSERT(BarycentricCPU.result(&r,dst)));
+        BarycentricCPU.release(&r);
     }
+
 
 #if 1
     ndioAddPluginPath("plugins");
-    {   
+    {
         const size_t shape_sz[]={NX,NY,NZ};
         nd_t v=ndref(ndreshape(ndcast(ndinit(),nd_u8),3,shape_sz),src,nd_static);
         ndioClose(ndioWrite(ndioOpen("src.tif",NULL,"w"),v));
