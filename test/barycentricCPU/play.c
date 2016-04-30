@@ -1,7 +1,7 @@
 #include <resamplers.h>
 #include <stdio.h>
-#include <stdlib.h>  
-#include <nd.h>
+#include <stdlib.h>
+#include <tiff.write.h>
 #include <tictoc.h>
 
 #define ASSERT(e)  do{if(!(e)) {printf("%s(%d): %s()(\n\tExpression evaluated as false.\n\t%s\n",__FILE__,__LINE__,__FUNCTION__,#e); exit(1); }}while(0)
@@ -30,7 +30,7 @@ const unsigned dst_stride[]={1,NX,NX*NY};
 
 #define s (0.5f)
 
-#if 1 
+#if 1
 // 30 degrees
 #define sn (0.5f)
 #define cs (0.866f)
@@ -38,7 +38,7 @@ const unsigned dst_stride[]={1,NX,NX*NY};
 // 5 degrees
 #define sn (0.0872f)
 #define cs (0.9962)
-#elif 1 
+#elif 1
 // 0 degrees
 #define sn (0.0f)
 #define cs (1.0f)
@@ -93,20 +93,16 @@ int main(int argc,char* argv[]) {
         BarycentricCPU.release(&r);
     }
 
-
-#if 1
-    ndioAddPluginPath("plugins");
-    {
-        const size_t shape_sz[]={NX,NY,NZ};
-        nd_t v=ndref(ndreshape(ndcast(ndinit(),nd_u8),3,shape_sz),src,nd_static);
-        ndioClose(ndioWrite(ndioOpen("src.tif",NULL,"w"),v));
-    }
-    {
-        const size_t shape_sz[]={NX,NY,NZ};
-        nd_t v=ndref(ndreshape(ndcast(ndinit(),nd_u8),3,shape_sz),dst,nd_static);
-        ndioClose(ndioWrite(ndioOpen("dst.tif",NULL,"w"),v));
-    }
-#endif
+    #if 1
+        {
+            const size_t shape_sz[]={NX,NY,NZ};
+            write_tiff_u8("src.tif",3,shape_sz,src);
+        }
+        {
+            const size_t shape_sz[]={NX,NY,NZ};
+            write_tiff_u8("dst.tif",3,shape_sz,dst);
+        }
+    #endif
 
     return 0;
 }

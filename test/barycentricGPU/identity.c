@@ -1,7 +1,7 @@
 #include <resamplers.h>
 #include <stdio.h>
-#include <stdlib.h>  
-#include <nd.h>
+#include <stdlib.h>
+#include <tiff.write.h>
 #include <tictoc.h>
 
 #define ASSERT(e) do{if(!(e)) {printf("%s(%d): %s()(\n\tExpression evaluated as false.\n\t%s\n",__FILE__,__LINE__,__FUNCTION__,#e); exit(2); }}while(0)
@@ -16,6 +16,10 @@ static unsigned eq(const TPixel * const a, const TPixel * const b,unsigned n) {
     }
     return 1;
 }
+
+#define NX (64)
+#define NY (64)
+#define NZ (64)
 
 TPixel src[64*64*64];
 TPixel dst[64*64*64];
@@ -56,19 +60,15 @@ int main(int argc,char* argv[]) {
     }
 
 #if 1
-    ndioAddPluginPath("plugins");
-    {   
-        const size_t shape_sz[]={64,64,64};
-        nd_t v=ndref(ndreshape(ndcast(ndinit(),nd_u8),3,shape_sz),src,nd_static);
-        ndioClose(ndioWrite(ndioOpen("src.tif",NULL,"w"),v));
+    {
+        const size_t shape_sz[]={NX,NY,NZ};
+        write_tiff_u8("src.tif",3,shape_sz,src);
     }
     {
-        const size_t shape_sz[]={64,64,64};
-        nd_t v=ndref(ndreshape(ndcast(ndinit(),nd_u8),3,shape_sz),dst,nd_static);
-        ndioClose(ndioWrite(ndioOpen("dst.tif",NULL,"w"),v));
+        const size_t shape_sz[]={NX,NY,NZ};
+        write_tiff_u8("dst.tif",3,shape_sz,dst);
     }
 #endif
-
 
     ASSERT(eq(src,dst,countof(src)));
     return 0;
